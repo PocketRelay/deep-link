@@ -1,0 +1,35 @@
+[package]
+name = "test-plugin"
+version = "0.0.1"
+edition = "2021"
+description = "ASI plugin for ME3 to allow playing completely offline"
+repository = "https://github.com/PocketRelay/me3-offline-plugin"
+license = "MIT"
+readme = "README.md"
+authors = ["Jacobtread <jacobtread@gmail.com>"]
+keywords = ["Hooking"]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+retour = { version = "0.3", features = ["static-detour", "thiscall-abi"] }
+
+[dependencies.windows-sys]
+version = "0.52"
+features = [
+    # Foundational types
+    "Win32_Foundation",
+    # For DLL_PROCESS_ATTACH and DLL_PROCESS_DETACH constants
+    "Win32_System_SystemServices",
+    # Required for allocating consoles
+    "Win32_System_Console",
+    # Required to do "always online" behavior
+    "Win32_Networking_WinInet",
+]
+
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
