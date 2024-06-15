@@ -1,15 +1,20 @@
 use std::{
     ffi::{CStr, CString},
     marker::PhantomData,
-    os::raw::{c_char, c_int, c_uchar, c_uint, c_ulong, c_ushort, c_void},
+    os::raw::{c_char, c_int, c_schar, c_uchar, c_uint, c_ulong, c_ushort, c_void},
+    ptr::null_mut,
 };
 
 /// Static memory address for the game objects
 static GAME_OBJECT_OFFSET: u32 = 0x01AB5634;
 
 /// Obtains a pointer to the [TArray] containing the game objects
-pub fn game_objects_ptr() -> *mut TArray<UObject> {
-    GAME_OBJECT_OFFSET as *mut TArray<UObject>
+pub fn game_objects_ref() -> &'static TArray<UObject> {
+    unsafe {
+        (GAME_OBJECT_OFFSET as *const TArray<UObject>)
+            .as_ref()
+            .expect("Game objects pointer was null")
+    }
 }
 
 /// Array type
@@ -46,6 +51,36 @@ impl<T> TArray<T> {
     }
 }
 
+impl<T> From<Vec<T>> for TArray<T> {
+    fn from(value: Vec<T>) -> Self {
+        let length = value.len() as c_int;
+        let capacity = value.capacity() as c_int;
+        let value = value.leak();
+
+        let data = value.as_mut_ptr();
+
+        Self {
+            data,
+            count: length,
+            capacity,
+            _type: PhantomData,
+        }
+    }
+}
+
+#[repr(C)]
+pub struct FString(TArray<i16>);
+
+impl FString {
+    pub fn from_string(value: String) -> FString {
+        let value = value
+            .encode_utf16()
+            .map(|value| value as i16)
+            .collect::<Vec<_>>();
+        FString(TArray::from(value))
+    }
+}
+
 #[repr(C)]
 pub struct UObjectVTable(c_void);
 
@@ -67,6 +102,10 @@ pub struct UObject {
 }
 
 impl UObject {
+    pub fn cast<T>(&self) -> *const T {
+        self as *const UObject as *const T
+    }
+
     /// Collects the full name of the object
     pub fn get_full_name(&self) -> String {
         match unsafe { (self.class.as_ref(), self.outer.as_ref()) } {
@@ -93,6 +132,29 @@ impl UObject {
 
     pub fn get_name(&self) -> &CStr {
         self.name.get_name()
+    }
+
+    pub fn process_event(
+        &self,
+        function: *mut UFunction,
+        params: *mut c_void,
+        result: *mut c_void,
+    ) {
+        let fn_ptr = unsafe { self.vtable_.add(70) }.cast::<extern "C" fn(
+            *mut UObject,
+            *mut UFunction,
+            *mut c_void,
+            *mut c_void,
+        )>();
+
+        unsafe {
+            (*fn_ptr)(
+                self as *const UObject as *mut UObject,
+                function,
+                params,
+                result,
+            )
+        }
     }
 }
 
@@ -225,4 +287,53 @@ impl UFunction {
     pub fn as_object_ref(&self) -> &UObject {
         self._base.as_object_ref()
     }
+}
+
+// Class SFXGame.SFXGUI_MainMenu_RightComputer
+// 0x0064 (0x00A0 - 0x003C)
+#[repr(C, packed(4))]
+pub struct USFXGUI_MainMenu_RightComputer {
+    _base: UObject,
+}
+
+impl USFXGUI_MainMenu_RightComputer {
+    pub fn as_object_ref(&self) -> &UObject {
+        &self._base
+    }
+}
+
+pub fn add_ticker_message(
+    this: *mut USFXGUI_MainMenu_RightComputer,
+    ty: c_uchar,
+    message: FString,
+    dlc_id: c_int,
+    server_id: c_int,
+) {
+    let game_objects = game_objects_ref();
+    let func_object: *const UFunction = game_objects
+        .get(61401)
+        .expect("Missing ticker message function")
+        .cast();
+
+    let params = USFXGUI_MainMenu_RightComputer_execAddTickerMessage_Parms {
+        ty,
+        message,
+        dlc_id,
+        server_id,
+    };
+
+    unsafe { this.read() }.as_object_ref().process_event(
+        func_object as *mut UFunction,
+        &params as *const _ as *mut c_void,
+        null_mut(),
+    )
+}
+
+struct USFXGUI_MainMenu_RightComputer_execAddTickerMessage_Parms {
+    ty: c_uchar,      // 0x0000 (0x0001) [0x0000000000000080]              ( CPF_Parm )
+    message: FString, // 0x0004 (0x000C) [0x0000000000400080]              ( CPF_Parm | CPF_NeedCtorLink )
+    dlc_id: c_int,    // 0x0010 (0x0004) [0x0000000000000080]              ( CPF_Parm )
+    server_id: c_int, // 0x0014 (0x0004) [0x0000000000000080]              ( CPF_Parm )
+                      // class USFXGUI_MainMenu_Message_Text*            NewMessage;                                       		// 0x0018 (0x0004) [0x0000000000000000]
+                      // class USFXGUI_MainMenu_Message_Text*            ExistingMessage;                                  		// 0x001C (0x0004) [0x0000000000000000]
 }

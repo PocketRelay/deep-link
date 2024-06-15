@@ -5,7 +5,7 @@ use std::io::Write;
 use std::os::raw::c_void;
 
 use retour::static_detour;
-use sdk::core::{UFunction, UObject};
+use sdk::core::{add_ticker_message, FString, UFunction, UObject, USFXGUI_MainMenu_RightComputer};
 use windows_sys::Win32::System::Console::{AllocConsole, FreeConsole};
 use windows_sys::Win32::System::SystemServices::{DLL_PROCESS_ATTACH, DLL_PROCESS_DETACH};
 
@@ -52,6 +52,7 @@ pub fn hook_process_event() {
 }
 
 static mut MESSAGES: Option<File> = None;
+static mut MESSAGE_SENT: bool = false;
 
 /// Offline check that always returns TRUE
 ///
@@ -70,6 +71,18 @@ pub unsafe extern "thiscall" fn fake_process_event(
     name.push('\n');
 
     MESSAGES.as_mut().unwrap().write_all(name.as_bytes());
+
+    let message = FString::from_string("This is a test message".to_string());
+
+    if name == "Function SFXGame.SFXGUIMovie.Start" && !MESSAGE_SENT {
+        add_ticker_message(
+            object as *mut USFXGUI_MainMenu_RightComputer,
+            0,
+            message,
+            0,
+            0,
+        );
+    }
 
     ProcessEvent.call(object, func, params, result);
 }
