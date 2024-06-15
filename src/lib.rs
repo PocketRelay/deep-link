@@ -3,7 +3,6 @@
 use std::fs::File;
 use std::io::Write;
 use std::os::raw::c_void;
-use std::sync::Mutex;
 
 use retour::static_detour;
 use sdk::core::{UFunction, UObject};
@@ -21,11 +20,13 @@ static_detour! {
 
 /// Windows DLL entrypoint for the plugin
 #[no_mangle]
-extern "stdcall" fn DllMain(_hmodule: isize, reason: u32, _: *mut ()) -> bool {
+extern "stdcall" fn DllMain(hmodule: isize, reason: u32, _: *mut ()) -> bool {
     if let DLL_PROCESS_ATTACH = reason {
         unsafe {
             AllocConsole();
         }
+
+        unsafe { MESSAGES = Some(File::create("event-dump.txt").unwrap()) }
 
         std::thread::spawn(hook_process_event);
     } else if let DLL_PROCESS_DETACH = reason {
@@ -50,6 +51,8 @@ pub fn hook_process_event() {
     };
 }
 
+static mut MESSAGES: Option<File> = None;
+
 /// Offline check that always returns TRUE
 ///
 /// ## Safety
@@ -63,5 +66,10 @@ pub unsafe extern "thiscall" fn fake_process_event(
     params: *mut c_void,
     result: *mut c_void,
 ) {
+    let mut name = func.read().as_object_ref().get_full_name();
+    name.push('\n');
+
+    MESSAGES.as_mut().unwrap().write_all(name.as_bytes());
+
     ProcessEvent.call(object, func, params, result);
 }
