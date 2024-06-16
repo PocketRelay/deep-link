@@ -21,7 +21,7 @@ static_detour! {
 
 /// Windows DLL entrypoint for the plugin
 #[no_mangle]
-extern "stdcall" fn DllMain(hmodule: isize, reason: u32, _: *mut ()) -> bool {
+extern "stdcall" fn DllMain(_hmodule: isize, reason: u32, _: *mut ()) -> bool {
     if let DLL_PROCESS_ATTACH = reason {
         unsafe {
             AllocConsole();
@@ -54,12 +54,7 @@ pub fn hook_process_event() {
 
 static mut MESSAGES: Option<File> = None;
 
-/// Offline check that always returns TRUE
-///
-/// ## Safety
-///
-/// Doesn't perform any unsafe actions, just must be marked as unsafe to
-/// be used as an extern fn
+#[allow(clippy::missing_safety_doc)]
 #[no_mangle]
 pub unsafe extern "thiscall" fn fake_process_event(
     object: *mut UObject,
@@ -70,12 +65,14 @@ pub unsafe extern "thiscall" fn fake_process_event(
     let mut name = func.read().as_object_ref().get_full_name();
     name.push('\n');
 
+    // Log the processed event full function name by writing it to a file
     MESSAGES
         .as_mut()
         .unwrap()
         .write_all(name.as_bytes())
         .unwrap();
 
+    // Hook existing display notification event code
     if name.contains("Function SFXGame.SFXOnlineComponentUI.OnDisplayNotification") {
         // Get mutable reference to type
         let this = object
