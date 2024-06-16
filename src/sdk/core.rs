@@ -1,9 +1,13 @@
 use std::{
+    char::decode_utf16,
     ffi::{CStr, CString},
+    fmt::{Debug, Display},
     marker::PhantomData,
     os::raw::{c_char, c_int, c_schar, c_uchar, c_uint, c_ulong, c_ushort, c_void},
     ptr::null_mut,
 };
+
+use crate::ProcessEvent;
 
 /// Static memory address for the game objects
 static GAME_OBJECT_OFFSET: u32 = 0x01AB5634;
@@ -49,6 +53,19 @@ impl<T> TArray<T> {
     pub fn capacity(&self) -> usize {
         self.capacity as usize
     }
+
+    pub fn clone_vec(&self) -> Vec<T>
+    where
+        T: Clone,
+    {
+        let mut out = Vec::with_capacity(self.len());
+        for i in 0..self.len() {
+            if let Some(value) = self.get(i) {
+                out.push(value.clone())
+            }
+        }
+        out
+    }
 }
 
 impl<T> From<Vec<T>> for TArray<T> {
@@ -72,12 +89,39 @@ impl<T> From<Vec<T>> for TArray<T> {
 pub struct FString(TArray<i16>);
 
 impl FString {
-    pub fn from_string(value: String) -> FString {
+    pub fn from_string(mut value: String) -> FString {
+        // String must be null terminated
+        if !value.ends_with('\0') {
+            value.push('\0')
+        }
+
         let value = value
             .encode_utf16()
             .map(|value| value as i16)
             .collect::<Vec<_>>();
         FString(TArray::from(value))
+    }
+}
+
+impl Debug for FString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(&self, f)
+    }
+}
+
+impl Display for FString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let out = decode_utf16(self.0.clone_vec().into_iter().map(|value| value as u16))
+            .try_fold(String::new(), |mut accu, value| {
+                if let Ok(value) = value {
+                    accu.push(value);
+                    Some(accu)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        f.write_str(&out)
     }
 }
 
@@ -315,6 +359,7 @@ pub fn add_ticker_message(
         .expect("Missing ticker message function")
         .cast();
 
+    panic!("TEST");
     let params = USFXGUI_MainMenu_RightComputer_execAddTickerMessage_Parms {
         ty,
         message,
@@ -322,11 +367,19 @@ pub fn add_ticker_message(
         server_id,
     };
 
-    unsafe { this.read() }.as_object_ref().process_event(
-        func_object as *mut UFunction,
-        &params as *const _ as *mut c_void,
-        null_mut(),
-    )
+    unsafe {
+        ProcessEvent.call(
+            this as *const _ as *mut UObject,
+            func_object as *mut UFunction,
+            &params as *const _ as *mut c_void,
+            null_mut(),
+        );
+    }
+    // unsafe { this.read() }.as_object_ref().process_event(
+    //     func_object as *mut UFunction,
+    //     &params as *const _ as *mut c_void,
+    //     null_mut(),
+    // )
 }
 
 struct USFXGUI_MainMenu_RightComputer_execAddTickerMessage_Parms {
@@ -336,4 +389,21 @@ struct USFXGUI_MainMenu_RightComputer_execAddTickerMessage_Parms {
     server_id: c_int, // 0x0014 (0x0004) [0x0000000000000080]              ( CPF_Parm )
                       // class USFXGUI_MainMenu_Message_Text*            NewMessage;                                       		// 0x0018 (0x0004) [0x0000000000000000]
                       // class USFXGUI_MainMenu_Message_Text*            ExistingMessage;                                  		// 0x001C (0x0004) [0x0000000000000000]
+}
+
+#[repr(C, packed(4))]
+pub struct FSFXOnlineMOTDInfo {
+    pub Message: FString,
+    pub Title: FString,
+    pub Image: FString,
+    pub TrackingID: ::std::os::raw::c_int,
+    pub Priority: ::std::os::raw::c_int,
+    pub BWEntId: ::std::os::raw::c_int,
+    pub offerId: ::std::os::raw::c_int,
+    pub Type: ::std::os::raw::c_uchar,
+}
+
+#[repr(C)]
+pub struct USFXOnlineComponentUI_eventOnDisplayNotification_Parms {
+    pub Info: FSFXOnlineMOTDInfo,
 }
