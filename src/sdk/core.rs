@@ -28,7 +28,7 @@ pub fn get_function_object(index: usize) -> Option<*mut UFunction> {
 
 /// Array type
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Copy)]
 pub struct TArray<T> {
     /// Pointer to the data within the array
     data: *mut T,
@@ -38,6 +38,19 @@ pub struct TArray<T> {
     capacity: c_int,
     /// Phantom type of the array generic type
     _type: PhantomData<::std::cell::UnsafeCell<T>>,
+}
+
+impl<T> Clone for TArray<T>
+where
+    T: Clone,
+{
+    fn clone(&self) -> Self {
+        let mut out = TArray::new();
+        for value in self.iter() {
+            out.push(value.clone());
+        }
+        out
+    }
 }
 
 pub struct TArrayIter<'a, T> {
@@ -71,8 +84,6 @@ impl<T> TArray<T> {
         unsafe { item.as_ref() }
     }
 
-    pub fn push(&mut self, index: usize) {}
-
     pub fn len(&self) -> usize {
         self.count as usize
     }
@@ -92,6 +103,58 @@ impl<T> TArray<T> {
             }
         }
         out
+    }
+
+    pub const fn new() -> Self {
+        TArray {
+            data: std::ptr::null_mut(),
+            count: 0,
+            capacity: 0,
+            _type: PhantomData,
+        }
+    }
+
+    fn grow(&mut self) {
+        let new_capacity = if self.capacity == 0 {
+            1
+        } else {
+            self.capacity * 2
+        };
+        let new_data = unsafe {
+            let layout = std::alloc::Layout::array::<T>(new_capacity as usize).unwrap();
+            let new_data = std::alloc::alloc(layout) as *mut T;
+            if new_data.is_null() {
+                panic!("Allocation failed");
+            }
+            new_data
+        };
+
+        // Copy old data to the new allocation
+        unsafe {
+            if !self.data.is_null() {
+                std::ptr::copy_nonoverlapping(self.data, new_data, self.count as usize);
+                std::alloc::dealloc(
+                    self.data as *mut u8,
+                    std::alloc::Layout::array::<T>(self.capacity as usize).unwrap(),
+                );
+            }
+            self.data = new_data;
+        }
+
+        self.capacity = new_capacity;
+    }
+
+    pub fn push(&mut self, value: T) {
+        if self.count == self.capacity {
+            self.grow();
+        }
+
+        unsafe {
+            let ptr = self.data.add(self.count as usize);
+            ptr.write(value);
+        }
+
+        self.count += 1;
     }
 
     pub fn iter(&self) -> TArrayIter<'_, T> {
@@ -174,7 +237,7 @@ impl Debug for FString {
 
 impl Display for FString {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let out = decode_utf16(self.0.clone_vec().into_iter().map(|value| value as u16))
+        let out = decode_utf16(self.0.iter().map(|value| *value as u16))
             .try_fold(String::new(), |mut accu, value| {
                 if let Ok(value) = value {
                     accu.push(value);
