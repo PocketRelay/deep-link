@@ -1,9 +1,11 @@
 #![warn(unused_crate_dependencies)]
 
+use std::collections::VecDeque;
 use std::fs::File;
 use std::io::Write;
 use std::os::raw::c_void;
 
+use parking_lot::Mutex;
 use retour::static_detour;
 use sdk::core::{FString, UFunction, UObject};
 use sdk::sfxgame::{FSFXOnlineMOTDInfo, USFXOnlineComponentUI};
@@ -28,6 +30,12 @@ extern "stdcall" fn DllMain(_hmodule: isize, reason: u32, _: *mut ()) -> bool {
         }
 
         unsafe { MESSAGES = Some(File::create("event-dump.txt").unwrap()) }
+
+        MESSAGE_QUEUE.lock().push_back(Message {
+            title : "Origin Confirmation Code".to_string(),
+            message:  "You Origin confirmation code is <font color='#FFFF66'>AC198E</font>, enter this on the dashboard to set a new password".to_string(),
+            image: "".to_string(),
+        });
 
         std::thread::spawn(hook_process_event);
     } else if let DLL_PROCESS_DETACH = reason {
@@ -54,6 +62,14 @@ pub fn hook_process_event() {
 
 static mut MESSAGES: Option<File> = None;
 
+static MESSAGE_QUEUE: Mutex<VecDeque<Message>> = Mutex::new(VecDeque::new());
+
+pub struct Message {
+    title: String,
+    message: String,
+    image: String,
+}
+
 #[allow(clippy::missing_safety_doc)]
 #[no_mangle]
 pub unsafe extern "thiscall" fn fake_process_event(
@@ -74,29 +90,27 @@ pub unsafe extern "thiscall" fn fake_process_event(
 
     // Hook existing display notification event code
     if name.contains("Function SFXGame.SFXOnlineComponentUI.OnDisplayNotification") {
-        // Get mutable reference to type
-        let this = object
-            .cast::<USFXOnlineComponentUI>()
-            .as_mut()
-            .expect("USFXOnlineComponentUI class was null");
+        let queue = &mut *MESSAGE_QUEUE.lock();
 
-        // Message parameters
-        let title = FString::from_str_with_null("Origin Confirmation Code\0");
-        let message = FString::from_str_with_null(
-            "You Origin confirmation code is <font color='#FFFF66'>AC198E</font>, enter this on the dashboard to set a new password\0");
-        let image = FString::from_str_with_null("\0");
+        if let Some(message) = queue.pop_front() {
+            // Get mutable reference to type
+            let this = object
+                .cast::<USFXOnlineComponentUI>()
+                .as_mut()
+                .expect("USFXOnlineComponentUI class was null");
 
-        // Include custom message aswell
-        this.event_on_display_notification(FSFXOnlineMOTDInfo {
-            message,
-            title,
-            image,
-            tracking_id: -1,
-            priority: 1,
-            bw_ent_id: 0,
-            offer_id: 0,
-            ty: 0,
-        });
+            // Include custom message aswell
+            this.event_on_display_notification(FSFXOnlineMOTDInfo {
+                title: FString::from_string(message.title),
+                message: FString::from_string(message.message),
+                image: FString::from_string(message.image),
+                tracking_id: -1,
+                priority: 1,
+                bw_ent_id: 0,
+                offer_id: 0,
+                ty: 0,
+            });
+        }
     }
 
     ProcessEvent.call(object, func, params, result);
