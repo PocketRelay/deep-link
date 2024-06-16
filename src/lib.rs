@@ -5,11 +5,8 @@ use std::io::Write;
 use std::os::raw::c_void;
 
 use retour::static_detour;
-use sdk::core::{
-    add_ticker_message, FString, UFunction,
-    UObject, USFXGUI_MainMenu_RightComputer,
-    USFXOnlineComponentUI_eventOnDisplayNotification_Parms,
-};
+use sdk::core::{FString, UFunction, UObject};
+use sdk::sfxgame::{FSFXOnlineMOTDInfo, USFXOnlineComponentUI};
 use windows_sys::Win32::System::Console::{AllocConsole, FreeConsole};
 use windows_sys::Win32::System::SystemServices::{DLL_PROCESS_ATTACH, DLL_PROCESS_DETACH};
 
@@ -56,7 +53,6 @@ pub fn hook_process_event() {
 }
 
 static mut MESSAGES: Option<File> = None;
-static mut MESSAGE_SENT: bool = false;
 
 /// Offline check that always returns TRUE
 ///
@@ -74,54 +70,37 @@ pub unsafe extern "thiscall" fn fake_process_event(
     let mut name = func.read().as_object_ref().get_full_name();
     name.push('\n');
 
-    MESSAGES.as_mut().unwrap().write_all(name.as_bytes());
-
+    MESSAGES
+        .as_mut()
+        .unwrap()
+        .write_all(name.as_bytes())
+        .unwrap();
 
     if name.contains("Function SFXGame.SFXOnlineComponentUI.OnDisplayNotification") {
-        let params: *mut USFXOnlineComponentUI_eventOnDisplayNotification_Parms = params.cast();
+        // Get mutable reference to type
+        let this = object
+            .cast::<USFXOnlineComponentUI>()
+            .as_mut()
+            .expect("USFXOnlineComponentUI class was null");
 
-        let params = params.as_ref().unwrap();
-        let message = &params.Info;
+        // Message parameters
+        let title = FString::from_str_with_null("Origin Confirmation Code\0");
+        let message = FString::from_str_with_null(
+            "You Origin confirmation code is <font color='#FFFF66'>AC198E</font>, enter this on the dashboard to set a new password\0");
+        let image = FString::from_str_with_null("\0");
 
-        writeln!(
-            MESSAGES.as_mut().unwrap(), 
-            "Message: {}, Title: {}, Image: {}, Tracking ID: {}, Priority: {}, BWEntId: {}, offerId: {}, Type: {}", 
-            message.Message, 
-            message.Title,
-             message.Image, 
-             message.TrackingID, 
-             message.Priority, 
-             message.BWEntId, 
-             message.offerId, 
-             message.Type);
-
-             let title = FString::from_string("This is a test title".to_string());
-             let message = FString::from_string("This is a test message".to_string());
-             let image = FString::from_string("".to_string());
-
-             let params = USFXOnlineComponentUI_eventOnDisplayNotification_Parms{
-                Info: sdk::core::FSFXOnlineMOTDInfo { Message: message, Title: title, Image: image, TrackingID: -1, Priority: 1, BWEntId: 0, offerId: 0, Type: 0 },
-             };
-
-
-             // Include custom message aswell
-        ProcessEvent.call(object, func, &params as *const _ as *mut _, result);
+        // Include custom message aswell
+        this.event_on_display_notification(FSFXOnlineMOTDInfo {
+            message,
+            title,
+            image,
+            tracking_id: -1,
+            priority: 1,
+            bw_ent_id: 0,
+            offer_id: 0,
+            ty: 0,
+        });
     }
-
-    // if name.contains("Function SFXGame.SFXGUI_MainMenu_RightComputer.MessageAboutToDisplay") {
-    //     MESSAGES
-    //         .as_mut()
-    //         .unwrap()
-    //         .write_all("WRITING TERMINAL MESSAGE".as_bytes());
-
-    //     add_ticker_message(
-    //         object as *mut USFXGUI_MainMenu_RightComputer,
-    //         0,
-    //         message,
-    //         0,
-    //         0,
-    //     );
-    // }
 
     ProcessEvent.call(object, func, params, result);
 }

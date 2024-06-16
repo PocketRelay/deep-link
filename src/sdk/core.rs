@@ -1,28 +1,34 @@
 use std::{
     char::decode_utf16,
-    ffi::{CStr, CString},
+    ffi::CStr,
     fmt::{Debug, Display},
     marker::PhantomData,
-    os::raw::{c_char, c_int, c_schar, c_uchar, c_uint, c_ulong, c_ushort, c_void},
-    ptr::null_mut,
+    os::raw::{c_char, c_int, c_uchar, c_uint, c_ulong, c_ushort, c_void},
 };
-
-use crate::ProcessEvent;
 
 /// Static memory address for the game objects
 static GAME_OBJECT_OFFSET: u32 = 0x01AB5634;
 
-/// Obtains a pointer to the [TArray] containing the game objects
-pub fn game_objects_ref() -> &'static TArray<UObject> {
+type GameObjectsArray = TArray<*mut UObject>;
+
+/// Obtains a reference to the [TArray] containing the game objects
+pub fn game_objects_ref() -> &'static mut TArray<*mut UObject> {
     unsafe {
-        (GAME_OBJECT_OFFSET as *const TArray<UObject>)
-            .as_ref()
+        (GAME_OBJECT_OFFSET as *const GameObjectsArray as *mut GameObjectsArray)
+            .as_mut()
             .expect("Game objects pointer was null")
     }
 }
 
+pub fn get_function_object(index: usize) -> Option<*mut UFunction> {
+    let fn_object = *game_objects_ref().get(index)?;
+    let fn_ptr = fn_object.cast::<UFunction>() as *mut _;
+    Some(fn_ptr)
+}
+
 /// Array type
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct TArray<T> {
     /// Pointer to the data within the array
     data: *mut T,
@@ -32,6 +38,25 @@ pub struct TArray<T> {
     capacity: c_int,
     /// Phantom type of the array generic type
     _type: PhantomData<::std::cell::UnsafeCell<T>>,
+}
+
+pub struct TArrayIter<'a, T> {
+    arr: &'a TArray<T>,
+    index: usize,
+}
+
+impl<'a, T> Iterator for TArrayIter<'a, T> {
+    type Item = &'a T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index < self.arr.len() {
+            let item = self.arr.get(self.index).expect("TArray item was null");
+            self.index += 1;
+            Some(item)
+        } else {
+            None
+        }
+    }
 }
 
 impl<T> TArray<T> {
@@ -45,6 +70,8 @@ impl<T> TArray<T> {
         let item = unsafe { self.data.add(index) };
         unsafe { item.as_ref() }
     }
+
+    pub fn push(&mut self, index: usize) {}
 
     pub fn len(&self) -> usize {
         self.count as usize
@@ -66,6 +93,22 @@ impl<T> TArray<T> {
         }
         out
     }
+
+    pub fn iter(&self) -> TArrayIter<'_, T> {
+        TArrayIter {
+            arr: self,
+            index: 0,
+        }
+    }
+}
+
+impl<T> Debug for TArray<T>
+where
+    T: Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.iter()).finish()
+    }
 }
 
 impl<T> From<Vec<T>> for TArray<T> {
@@ -86,13 +129,33 @@ impl<T> From<Vec<T>> for TArray<T> {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct FString(TArray<i16>);
+
+impl Default for FString {
+    fn default() -> Self {
+        Self(TArray::from(vec![0]))
+    }
+}
 
 impl FString {
     pub fn from_string(mut value: String) -> FString {
         // String must be null terminated
         if !value.ends_with('\0') {
             value.push('\0')
+        }
+
+        let value = value
+            .encode_utf16()
+            .map(|value| value as i16)
+            .collect::<Vec<_>>();
+        FString(TArray::from(value))
+    }
+
+    pub fn from_str_with_null(value: &str) -> FString {
+        // String must be null terminated
+        if !value.ends_with('\0') {
+            panic!("FString::from_str missing null terminator \"{value}\"");
         }
 
         let value = value
@@ -128,6 +191,7 @@ impl Display for FString {
 #[repr(C)]
 pub struct UObjectVTable(c_void);
 
+#[derive(Debug, Clone, Copy)]
 #[repr(C, packed(4))]
 pub struct UObject {
     pub vtable_: *const UObjectVTable,
@@ -202,17 +266,20 @@ impl UObject {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct FQWord {
     pub a: c_int,
     pub b: c_int,
 }
 
+#[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct FPointer {
     pub dummy: c_int,
 }
 
+#[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct FName {
     pub name_entry: *mut FNameEntry,
@@ -233,6 +300,7 @@ impl FName {
 }
 
 // Name entry
+#[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct FNameEntry {
     // Unknown block of data
@@ -249,6 +317,7 @@ impl FNameEntry {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct UClass {
     pub _base: UState,
@@ -265,6 +334,7 @@ impl UClass {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct UState {
     pub _base: UStruct,
@@ -281,6 +351,7 @@ impl UState {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct UStruct {
     pub _base: UField,
@@ -297,6 +368,7 @@ impl UStruct {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
 #[repr(C, packed(4))]
 pub struct UField {
     pub _base: UObject,
@@ -314,6 +386,7 @@ impl UField {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
 #[repr(C, packed(4))]
 pub struct UFunction {
     pub _base: UStruct,
@@ -333,77 +406,8 @@ impl UFunction {
     }
 }
 
-// Class SFXGame.SFXGUI_MainMenu_RightComputer
-// 0x0064 (0x00A0 - 0x003C)
-#[repr(C, packed(4))]
-pub struct USFXGUI_MainMenu_RightComputer {
-    _base: UObject,
-}
-
-impl USFXGUI_MainMenu_RightComputer {
-    pub fn as_object_ref(&self) -> &UObject {
-        &self._base
-    }
-}
-
-pub fn add_ticker_message(
-    this: *mut USFXGUI_MainMenu_RightComputer,
-    ty: c_uchar,
-    message: FString,
-    dlc_id: c_int,
-    server_id: c_int,
-) {
-    let game_objects = game_objects_ref();
-    let func_object: *const UFunction = game_objects
-        .get(61401)
-        .expect("Missing ticker message function")
-        .cast();
-
-    panic!("TEST");
-    let params = USFXGUI_MainMenu_RightComputer_execAddTickerMessage_Parms {
-        ty,
-        message,
-        dlc_id,
-        server_id,
-    };
-
-    unsafe {
-        ProcessEvent.call(
-            this as *const _ as *mut UObject,
-            func_object as *mut UFunction,
-            &params as *const _ as *mut c_void,
-            null_mut(),
-        );
-    }
-    // unsafe { this.read() }.as_object_ref().process_event(
-    //     func_object as *mut UFunction,
-    //     &params as *const _ as *mut c_void,
-    //     null_mut(),
-    // )
-}
-
-struct USFXGUI_MainMenu_RightComputer_execAddTickerMessage_Parms {
-    ty: c_uchar,      // 0x0000 (0x0001) [0x0000000000000080]              ( CPF_Parm )
-    message: FString, // 0x0004 (0x000C) [0x0000000000400080]              ( CPF_Parm | CPF_NeedCtorLink )
-    dlc_id: c_int,    // 0x0010 (0x0004) [0x0000000000000080]              ( CPF_Parm )
-    server_id: c_int, // 0x0014 (0x0004) [0x0000000000000080]              ( CPF_Parm )
-                      // class USFXGUI_MainMenu_Message_Text*            NewMessage;                                       		// 0x0018 (0x0004) [0x0000000000000000]
-                      // class USFXGUI_MainMenu_Message_Text*            ExistingMessage;                                  		// 0x001C (0x0004) [0x0000000000000000]
-}
-
-#[repr(C, packed(4))]
-pub struct FSFXOnlineMOTDInfo {
-    pub Message: FString,
-    pub Title: FString,
-    pub Image: FString,
-    pub TrackingID: ::std::os::raw::c_int,
-    pub Priority: ::std::os::raw::c_int,
-    pub BWEntId: ::std::os::raw::c_int,
-    pub offerId: ::std::os::raw::c_int,
-    pub Type: ::std::os::raw::c_uchar,
-}
-
+#[derive(Debug, Clone, Copy)]
 #[repr(C)]
-pub struct USFXOnlineComponentUI_eventOnDisplayNotification_Parms {
-    pub Info: FSFXOnlineMOTDInfo,
+pub struct FScriptDelegate {
+    pub UnknownData00: [::std::os::raw::c_uchar; 12usize],
 }
