@@ -1,25 +1,101 @@
 #![warn(unused_crate_dependencies)]
 
-use std::collections::VecDeque;
 use std::fs::File;
 use std::io::Write;
 use std::os::raw::c_void;
 
-use parking_lot::Mutex;
-use retour::static_detour;
 use sdk::core::{FString, UFunction, UObject};
 use sdk::sfxgame::{FSFXOnlineMOTDInfo, USFXOnlineComponentUI};
 use serde::{Deserialize, Serialize};
 use windows_sys::Win32::System::Console::{AllocConsole, FreeConsole};
+use windows_sys::Win32::System::Memory::{
+    VirtualAlloc, VirtualProtect, MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE_READWRITE,
+};
 use windows_sys::Win32::System::SystemServices::{DLL_PROCESS_ATTACH, DLL_PROCESS_DETACH};
 
 mod sdk;
 
-type ProcessEventTy =
+type ProcessEvent =
     unsafe extern "thiscall" fn(*mut UObject, *mut UFunction, *mut c_void, *mut c_void);
 
-static_detour! {
-  static ProcessEvent: unsafe extern "thiscall" fn(*mut UObject, *mut UFunction, *mut c_void, *mut c_void);
+const JMP_SIZE: usize = 5; // Size of a near jump instruction in x86
+
+static mut ORIGINAL_BYTES: [u8; JMP_SIZE] = [0; JMP_SIZE];
+static mut ORIGINAL_FUNCTION: Option<ProcessEvent> = None;
+
+/// # Safety
+pub unsafe fn process_event(
+    this: *mut UObject,
+    func: *mut UFunction,
+    params: *mut c_void,
+    result: *mut c_void,
+) {
+    // Call the original function
+    (ORIGINAL_FUNCTION.unwrap())(this, func, params, result);
+}
+
+unsafe fn hook_function_address(target: *mut u8, hook: *const u8) {
+    // Save original bytes
+    std::ptr::copy_nonoverlapping(target, ORIGINAL_BYTES.as_mut_ptr(), JMP_SIZE);
+
+    // Construct the jump instruction to the hook function
+    let relative_offset = hook as isize - target as isize - JMP_SIZE as isize;
+    let jmp_instruction = [
+        0xE9,
+        (relative_offset & 0xFF) as u8,
+        ((relative_offset >> 8) & 0xFF) as u8,
+        ((relative_offset >> 16) & 0xFF) as u8,
+        ((relative_offset >> 24) & 0xFF) as u8,
+    ];
+
+    // Change memory permissions to writable
+    let mut old_protect: u32 = 0;
+    VirtualProtect(
+        target as *mut _,
+        JMP_SIZE,
+        PAGE_EXECUTE_READWRITE,
+        &mut old_protect,
+    );
+
+    // Write the jump instruction to the target function
+    std::ptr::copy_nonoverlapping(jmp_instruction.as_ptr(), target, JMP_SIZE);
+
+    // Restore memory permissions
+    VirtualProtect(target as *mut _, JMP_SIZE, old_protect, &mut old_protect);
+
+    // Calculate the address of the original function after the JMP instruction
+    let trampoline_size = JMP_SIZE;
+    let trampoline = VirtualAlloc(
+        std::ptr::null_mut(),
+        trampoline_size,
+        MEM_COMMIT | MEM_RESERVE,
+        PAGE_EXECUTE_READWRITE,
+    );
+
+    if trampoline.is_null() {
+        panic!("Failed to allocate memory for trampoline");
+    }
+
+    std::ptr::copy_nonoverlapping(ORIGINAL_BYTES.as_ptr(), trampoline as *mut u8, JMP_SIZE);
+
+    let jump_back_offset =
+        (target.add(JMP_SIZE) as isize - trampoline as isize - JMP_SIZE as isize) as u32;
+    let jump_back = [
+        0xE9,
+        (jump_back_offset & 0xFF) as u8,
+        ((jump_back_offset >> 8) & 0xFF) as u8,
+        ((jump_back_offset >> 16) & 0xFF) as u8,
+        ((jump_back_offset >> 24) & 0xFF) as u8,
+    ];
+
+    std::ptr::copy_nonoverlapping(
+        jump_back.as_ptr(),
+        trampoline.add(JMP_SIZE) as *mut u8,
+        jump_back.len(),
+    );
+
+    // Save the original function pointer, adjusted to skip the JMP instruction
+    ORIGINAL_FUNCTION = Some(std::mem::transmute::<*mut c_void, ProcessEvent>(trampoline));
 }
 
 /// Windows DLL entrypoint for the plugin
@@ -32,7 +108,12 @@ extern "stdcall" fn DllMain(_hmodule: isize, reason: u32, _: *mut ()) -> bool {
 
         unsafe { MESSAGES = Some(File::create("event-dump.txt").unwrap()) }
 
-        std::thread::spawn(hook_process_event);
+        unsafe {
+            hook_function_address(
+                0x00453120 as *const u8 as *mut u8,
+                fake_process_event as *const u8,
+            );
+        }
     } else if let DLL_PROCESS_DETACH = reason {
         unsafe {
             FreeConsole();
@@ -40,19 +121,6 @@ extern "stdcall" fn DllMain(_hmodule: isize, reason: u32, _: *mut ()) -> bool {
     }
 
     true
-}
-
-pub fn hook_process_event() {
-    unsafe {
-        ProcessEvent
-            .initialize(
-                std::mem::transmute::<u32, ProcessEventTy>(0x00453120),
-                |object, func, params, result| fake_process_event(object, func, params, result),
-            )
-            .expect("Failed to create detour")
-            .enable()
-            .expect("Failed to enable detour")
-    };
 }
 
 static mut MESSAGES: Option<File> = None;
@@ -140,7 +208,7 @@ pub unsafe extern "thiscall" fn fake_process_event(
         }
     }
 
-    ProcessEvent.call(object, func, params, result);
+    process_event(object, func, params, result);
 }
 
 // Enum SFXOnlineFoundation.SFXOnlineDefine.SFXOnlineConnection_MessageType

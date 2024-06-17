@@ -1,7 +1,7 @@
 use super::{core::FString, sfxonlinefoundation::USFXOnlineComponent};
 use crate::{
+    process_event,
     sdk::core::{get_function_object, UFunction},
-    ProcessEvent,
 };
 use std::ptr::null_mut;
 
@@ -33,7 +33,7 @@ macro_rules! define_method {
                 $( $arg_name ),*
             };
 
-            ProcessEvent.call(
+            process_event(
                 self as *const _ as *mut _,
                 FN_PTR,
                 &mut params as *const _ as *mut _,
